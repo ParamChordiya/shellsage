@@ -2,6 +2,8 @@
 
 > Plain English to shell commands, powered by Claude or Ollama.
 
+[![PyPI](https://img.shields.io/pypi/v/shellsage-ai)](https://pypi.org/project/shellsage-ai/)
+[![PyPI Downloads](https://img.shields.io/pypi/dm/shellsage-ai)](https://pypi.org/project/shellsage-ai/)
 ![Claude API](https://img.shields.io/badge/Claude-API-orange?logo=anthropic)
 ![Ollama](https://img.shields.io/badge/Ollama-local-blue)
 ![Offline Capable](https://img.shields.io/badge/offline-capable-green)
@@ -19,7 +21,7 @@
 ## Installation
 
 ```bash
-pip install shellsage
+pip install shellsage-ai
 ```
 
 After installing, run the one-time setup:
@@ -184,7 +186,7 @@ This re-runs the interactive setup wizard where you can switch between Claude an
 
 1. Fork the repository.
 2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Install dev dependencies: `pip install -e ".[dev]"`
+3. Install dev dependencies: `pip install -e ".[dev]"` (package name on PyPI: `shellsage-ai`)
 4. Run tests: `pytest tests/`
 5. Submit a pull request.
 
