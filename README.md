@@ -10,11 +10,6 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 
----
-
-## Demo
-
-![Demo](demo.gif)
 
 ---
 
