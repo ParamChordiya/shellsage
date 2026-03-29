@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shellsage"
+version = "0.1.0"
+description = "Plain English to shell commands, powered by Claude or Ollama"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+keywords = ["cli", "ai", "shell", "llm", "ollama", "claude"]
+dependencies = [
+    "typer>=0.12",
+    "rich>=13.0",
+    "anthropic>=0.25",
+    "requests>=2.31",
+    "tomli>=2.0",
+    "tomli-w>=1.0",
+]
+
+[project.scripts]
+shellsage = "shellsage.main:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-mock>=3.0",
+]
