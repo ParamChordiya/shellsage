@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "shellsage"
+name = "shellsage-ai"
 version = "0.1.0"
 description = "Plain English to shell commands, powered by Claude or Ollama"
 readme = "README.md"
@@ -21,6 +21,9 @@ dependencies = [
 
 [project.scripts]
 shellsage = "shellsage.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["shellsage"]
 
 [project.optional-dependencies]
 dev = [
