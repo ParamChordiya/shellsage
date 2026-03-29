@@ -59,6 +59,19 @@ def run_wizard() -> None:
     save_history = Confirm.ask("\nRemember command history this session?", default=True)
     cfg["preferences"]["save_history"] = save_history
 
+    # ---- Execution mode -------------------------------------------------
+    console.print("\n[bold]How should ShellSage handle commands?[/bold]")
+    console.print(
+        "  [bold cyan][1][/bold cyan] Ask before every command "
+        "[dim](default — safest)[/dim]"
+    )
+    console.print(
+        "  [bold cyan][2][/bold cyan] Auto-run 🟢 safe commands, "
+        "ask only for 🟡 caution and 🔴 destructive\n"
+    )
+    mode_choice = Prompt.ask("Execution mode", choices=["1", "2"], default="1")
+    cfg["preferences"]["execution_mode"] = "ask_all" if mode_choice == "1" else "auto_safe"
+
     # ---- Persist config -------------------------------------------------
     config.save(cfg)
 

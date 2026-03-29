@@ -204,6 +204,12 @@ def run(
         sys.exit(1)
 
     total = len(steps)
+    execution_mode = config.get_execution_mode()
+
+    # When auto_safe mode is active and the plan has multiple steps, show a
+    # summary so the user knows what will run automatically vs what needs approval.
+    if execution_mode == "auto_safe" and total > 1:
+        _render_plan_summary(steps, total)
 
     # ---- Process each step ----------------------------------------------
     for idx, step in enumerate(steps, start=1):
@@ -216,6 +222,7 @@ def run(
             explain_flag=explain_flag,
             provider=provider,
             system_prompt=system_prompt,
+            execution_mode=execution_mode,
         )
 
 
@@ -233,9 +240,15 @@ def _process_step(
     explain_flag: bool,
     provider: LLMProvider,
     system_prompt: str,
+    execution_mode: str = "ask_all",
 ) -> None:
-    """Handle one step: show, prompt, explain, execute, self-correct."""
-    # Blocklist check
+    """Handle one step: show, optionally auto-run, prompt, explain, self-correct.
+
+    execution_mode:
+      "ask_all"   — always prompt before running (original behaviour)
+      "auto_safe" — run safe commands automatically; prompt for caution/destructive
+    """
+    # Blocklist check — always enforced regardless of execution mode
     if is_blocked(step["command"]):
         console.print(
             Panel(
@@ -247,13 +260,30 @@ def _process_step(
         )
         sys.exit(1)
 
+    effective_level = classify_danger(step["command"], step["danger_level"])
+    auto_run = execution_mode == "auto_safe" and effective_level == "safe"
+
     _render_step(step, idx, total)
+
+    if auto_run:
+        console.print("[dim]Auto-running (safe command)...[/dim]")
+        result = execute(step["command"], dry_run=dry_run)
+        history.record(intent=intent, command=step["command"], success=result.success)
+        if result.success or dry_run:
+            return
+        # Even auto-run steps self-correct on failure
+        _self_correct(
+            step=step, idx=idx, total=total, intent=intent,
+            stderr=result.stderr, dry_run=dry_run, provider=provider,
+            system_prompt=system_prompt, execution_mode=execution_mode,
+        )
+        return
 
     # --explain auto-explains before prompting
     if explain_flag:
         _show_explanation(provider, step["command"])
 
-    # Prompt user
+    # Manual prompt
     while True:
         answer = Prompt.ask(
             "[bold]Run this?[/bold] [dim](y / n / e to explain)[/dim]",
@@ -276,38 +306,10 @@ def _process_step(
         if result.success or dry_run:
             return
 
-        # ---- Self-correction --------------------------------------------
-        console.print(
-            Panel(
-                result.stderr or "(no stderr output)",
-                title="Command failed — attempting self-correction",
-                border_style="yellow",
-            )
-        )
-
-        try:
-            correction_prompt = _build_correction_prompt(step["command"], result.stderr)
-            raw_correction = _call_llm(provider, system_prompt, correction_prompt, label="Correcting")
-            corrected_steps = _parse_with_retry(provider, system_prompt, correction_prompt, raw_correction)
-        except Exception as exc:
-            console.print(Panel(str(exc), title="Error", border_style="red"))
-            return
-
-        if not corrected_steps:
-            console.print(Panel("Could not generate a corrected command.", border_style="red"))
-            return
-
-        corrected = corrected_steps[0]
-        # Recurse to handle the corrected step with the same flow
-        _process_step(
-            step=corrected,
-            idx=idx,
-            total=total,
-            intent=intent,
-            dry_run=dry_run,
-            explain_flag=False,
-            provider=provider,
-            system_prompt=system_prompt,
+        _self_correct(
+            step=step, idx=idx, total=total, intent=intent,
+            stderr=result.stderr, dry_run=dry_run, provider=provider,
+            system_prompt=system_prompt, execution_mode=execution_mode,
         )
         return
 
@@ -315,6 +317,79 @@ def _process_step(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _self_correct(
+    *,
+    step: Step,
+    idx: int,
+    total: int,
+    intent: str,
+    stderr: str,
+    dry_run: bool,
+    provider: LLMProvider,
+    system_prompt: str,
+    execution_mode: str,
+) -> None:
+    """Ask the LLM to fix a failed command, then re-process the corrected step."""
+    console.print(
+        Panel(
+            stderr or "(no stderr output)",
+            title="Command failed — attempting self-correction",
+            border_style="yellow",
+        )
+    )
+    try:
+        correction_prompt = _build_correction_prompt(step["command"], stderr)
+        raw_correction = _call_llm(
+            provider, system_prompt, correction_prompt, label="Correcting"
+        )
+        corrected_steps = _parse_with_retry(
+            provider, system_prompt, correction_prompt, raw_correction
+        )
+    except Exception as exc:
+        console.print(Panel(str(exc), title="Error", border_style="red"))
+        return
+
+    if not corrected_steps:
+        console.print(
+            Panel("Could not generate a corrected command.", border_style="red")
+        )
+        return
+
+    _process_step(
+        step=corrected_steps[0],
+        idx=idx,
+        total=total,
+        intent=intent,
+        dry_run=dry_run,
+        explain_flag=False,
+        provider=provider,
+        system_prompt=system_prompt,
+        execution_mode=execution_mode,
+    )
+
+
+def _render_plan_summary(steps: list[Step], total: int) -> None:
+    """Print a plan overview table showing which steps will auto-run vs need approval."""
+    from rich.table import Table  # noqa: PLC0415
+
+    table = Table(title=f"Plan — {total} steps", show_lines=True)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Command", style="bold")
+    table.add_column("Action", width=18)
+
+    for i, step in enumerate(steps, start=1):
+        level = classify_danger(step["command"], step["danger_level"])
+        emoji = danger_emoji(level)
+        if level == "safe":
+            action = "[green]auto-run[/green]"
+        else:
+            action = f"[yellow]will ask ({level})[/yellow]"
+        table.add_row(str(i), step["command"], f"{emoji} {action}")
+
+    console.print(table)
+    console.print()
+
 
 def _show_explanation(provider: LLMProvider, command: str) -> None:
     """Fetch and display a per-token explanation of *command*."""

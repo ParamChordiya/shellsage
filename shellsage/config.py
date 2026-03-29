@@ -27,6 +27,9 @@ _DEFAULTS: dict[str, Any] = {
         "save_history": True,
         "confirm_before_run": True,
         "danger_warnings": True,
+        # "ask_all"  — prompt before every command (original behaviour)
+        # "auto_safe" — auto-run safe commands, prompt only for caution/destructive
+        "execution_mode": "ask_all",
     },
 }
 
@@ -95,6 +98,14 @@ def get_save_history(cfg: dict[str, Any] | None = None) -> bool:
     if cfg is None:
         cfg = load()
     return bool(cfg.get("preferences", {}).get("save_history", True))
+
+
+def get_execution_mode(cfg: dict[str, Any] | None = None) -> str:
+    """Return 'ask_all' or 'auto_safe'."""
+    if cfg is None:
+        cfg = load()
+    mode = cfg.get("preferences", {}).get("execution_mode", "ask_all")
+    return mode if mode in ("ask_all", "auto_safe") else "ask_all"
 
 
 # ---------------------------------------------------------------------------
