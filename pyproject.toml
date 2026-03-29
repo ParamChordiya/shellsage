@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.scripts]
-shellsage = "shellsage.main:app"
+shellsage = "shellsage.main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["shellsage"]
