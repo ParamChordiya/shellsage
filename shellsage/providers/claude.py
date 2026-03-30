@@ -62,15 +62,21 @@ class ClaudeProvider(LLMProvider):
         self._client = anthropic.Anthropic(api_key=api_key)
         return self._client
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        messages: list[dict] | None = None,
+    ) -> str:
         """Call the Claude API and return the assistant's text response."""
         client = self._get_client()
+        msgs = messages if messages is not None else [{"role": "user", "content": user}]
         try:
             message = client.messages.create(
                 model=self.model,
                 max_tokens=2048,
                 system=system,
-                messages=[{"role": "user", "content": user}],
+                messages=msgs,
             )
             return message.content[0].text
         except Exception as exc:

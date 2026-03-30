@@ -12,7 +12,7 @@ import shellsage.config as config
 import shellsage.history as history
 
 # Known subcommand names — used by the entry-point pre-router below.
-_SUBCOMMANDS = frozenset({"init", "config", "history", "ask"})
+_SUBCOMMANDS = frozenset({"init", "config", "history", "ask", "chat"})
 
 app = typer.Typer(
     name="shellsage",
@@ -95,6 +95,19 @@ def config_cmd() -> None:
         run_wizard()
 
 
+@app.command(name="chat")
+def chat_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show commands without executing."),
+    explain: bool = typer.Option(False, "--explain", help="Show per-token breakdown before prompting."),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", metavar="PROVIDER",
+        help="Override provider for this session: claude or ollama.",
+    ),
+) -> None:
+    """Start an interactive multi-turn chat session."""
+    _run_chat(dry_run, explain, provider)
+
+
 @app.command(name="history")
 def history_cmd(
     clear: bool = typer.Option(False, "--clear", help="Clear all saved history."),
@@ -144,6 +157,31 @@ def _run_agent(
         )
     except KeyboardInterrupt:
         console.print("\n[dim]Interrupted.[/dim]")
+        raise typer.Exit()
+    except Exception as exc:
+        from rich.panel import Panel  # noqa: PLC0415
+        console.print(Panel(str(exc), title="Error", border_style="red"))
+        raise typer.Exit(code=1)
+
+
+def _run_chat(dry_run: bool, explain: bool, provider: Optional[str]) -> None:
+    if provider and provider not in ("claude", "ollama"):
+        console.print(
+            f"[red]Unknown provider '[bold]{provider}[/bold]'. Use 'claude' or 'ollama'.[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    _ensure_configured()
+
+    cfg = config.load()
+    history.configure(config.get_save_history(cfg))
+
+    from shellsage.chat import run_chat  # noqa: PLC0415
+
+    try:
+        run_chat(dry_run=dry_run, explain_flag=explain, provider_override=provider)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Goodbye.[/dim]")
         raise typer.Exit()
     except Exception as exc:
         from rich.panel import Panel  # noqa: PLC0415
