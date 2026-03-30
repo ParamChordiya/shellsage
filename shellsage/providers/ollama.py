@@ -31,16 +31,26 @@ class OllamaProvider(LLMProvider):
         self.model = model
         self.base_url = base_url.rstrip("/")
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        messages: list[dict] | None = None,
+    ) -> str:
         """Call the Ollama /api/chat endpoint and return the assistant text."""
         url = f"{self.base_url}/api/chat"
+        if messages is not None:
+            # Prepend the system message — Ollama expects it inside the array
+            all_messages = [{"role": "system", "content": system}] + messages
+        else:
+            all_messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
         payload = {
             "model": self.model,
             "stream": False,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            "messages": all_messages,
         }
         try:
             response = requests.post(url, json=payload, timeout=60)

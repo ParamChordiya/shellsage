@@ -131,3 +131,77 @@ class TestClaudeProvider:
     def test_default_model_is_sonnet(self):
         provider = ClaudeProvider()
         assert "sonnet" in provider.model.lower() or "claude" in provider.model.lower()
+
+    def test_complete_with_messages_forwards_array(self):
+        """When messages is provided it is passed directly; user is ignored."""
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            mock_client = MagicMock()
+            mock_message = MagicMock()
+            mock_message.content = [MagicMock(text="response")]
+            mock_client.messages.create.return_value = mock_message
+
+            msgs = [
+                {"role": "user", "content": "first turn"},
+                {"role": "assistant", "content": "first reply"},
+                {"role": "user", "content": "second turn"},
+            ]
+            provider = ClaudeProvider()
+            provider._client = mock_client
+            provider.complete("sys", "ignored_user", messages=msgs)
+
+            call_kwargs = mock_client.messages.create.call_args[1]
+            assert call_kwargs["messages"] == msgs
+
+    def test_complete_without_messages_unchanged(self):
+        """Calling complete(system, user) without messages still works as before."""
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            mock_client = MagicMock()
+            mock_message = MagicMock()
+            mock_message.content = [MagicMock(text="response")]
+            mock_client.messages.create.return_value = mock_message
+
+            provider = ClaudeProvider()
+            provider._client = mock_client
+            provider.complete("sys", "my user message")
+
+            call_kwargs = mock_client.messages.create.call_args[1]
+            assert call_kwargs["messages"] == [{"role": "user", "content": "my user message"}]
+
+
+class TestOllamaProviderMessages:
+    def test_complete_with_messages_prepends_system(self):
+        """When messages is provided, system is prepended inside the array."""
+        with patch("requests.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"message": {"content": "ok"}}
+            mock_post.return_value = mock_response
+
+            msgs = [
+                {"role": "user", "content": "turn 1"},
+                {"role": "assistant", "content": "reply 1"},
+                {"role": "user", "content": "turn 2"},
+            ]
+            provider = OllamaProvider()
+            provider.complete("my system", "ignored", messages=msgs)
+
+            payload = mock_post.call_args[1]["json"]
+            assert payload["messages"][0] == {"role": "system", "content": "my system"}
+            assert payload["messages"][1:] == msgs
+
+    def test_complete_without_messages_unchanged(self):
+        """Calling complete(system, user) without messages still works as before."""
+        with patch("requests.post") as mock_post:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"message": {"content": "ok"}}
+            mock_post.return_value = mock_response
+
+            provider = OllamaProvider()
+            provider.complete("sys", "my user")
+
+            payload = mock_post.call_args[1]["json"]
+            assert payload["messages"] == [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "my user"},
+            ]
