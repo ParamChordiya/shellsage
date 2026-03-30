@@ -10,7 +10,6 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 
-
 ---
 
 ## Installation
@@ -44,6 +43,42 @@ shellsage "kill whatever process is running on port 8080"
 
 # Bulk rename all .jpeg files to .jpg
 shellsage "rename all .jpeg files in this folder to .jpg"
+```
+
+---
+
+## Chat Mode (Multi-Turn)
+
+`shellsage chat` opens an interactive REPL where the full conversation — your
+requests, the AI's responses, and actual command output — is remembered across
+turns. Use it when you want to refine commands, build on previous results, or
+have a back-and-forth with the AI.
+
+```bash
+shellsage chat
+```
+
+```
+shellsage> list python files in this repo
+  → ls **/*.py          [safe]   Run? y
+  output: shellsage/agent.py, shellsage/chat.py ...
+
+shellsage> now show only the ones modified in the last 7 days
+  → find . -name "*.py" -mtime -7    [safe]   Run? y
+
+shellsage> what was the output of the first command?
+  The first command listed: shellsage/agent.py, shellsage/chat.py ...
+
+shellsage> exit
+```
+
+Each turn automatically feeds the command output back to the AI, so follow-up
+requests are always context-aware.
+
+```bash
+shellsage chat --dry-run          # show commands, never execute
+shellsage chat --explain          # explain each command before prompting
+shellsage chat --provider claude  # override provider for this session
 ```
 
 ---
@@ -88,23 +123,23 @@ Then run `shellsage init` and choose **Ollama**.
 ## CLI Reference
 
 ```
-Usage: shellsage [OPTIONS] [INTENT] COMMAND [ARGS]...
+Usage: shellsage [INTENT] [OPTIONS]
+       shellsage COMMAND [OPTIONS]
 
-  Translate INTENT into shell commands using AI.
+Single-shot mode:
+  shellsage "your intent"   Translate plain English into shell commands.
 
-Arguments:
-  INTENT  Plain English description of what you want to do.
-
-Options:
+Options (single-shot):
   --dry-run           Show commands without executing them.
   --explain           Show per-token breakdown before prompting.
   --provider TEXT     Override configured provider: claude or ollama.
   --help              Show this message and exit.
 
 Commands:
+  chat      Start an interactive multi-turn chat session.
   init      Run the first-time setup wizard.
-  config    Re-run the setup wizard to change settings.
-  history   Print this session's command history.
+  config    Show current config / re-run the setup wizard.
+  history   Print command history. Use --clear to wipe it.
 ```
 
 ### Examples
@@ -119,12 +154,33 @@ shellsage "set up a Python virtual environment" --explain
 # Override provider for this run
 shellsage "list docker containers" --provider claude
 
-# View commands run this session
+# Start interactive chat mode
+shellsage chat
+shellsage chat --dry-run --provider ollama
+
+# View saved command history
 shellsage history
+
+# Clear history
+shellsage history --clear
 
 # Reconfigure at any time
 shellsage config
 ```
+
+---
+
+## Execution Modes
+
+Choose how ShellSage handles command execution during `shellsage init` or
+`shellsage config`:
+
+| Mode | Behaviour |
+|------|-----------|
+| **Ask before each** (default) | Prompts `y / n / e` for every command, regardless of danger level. |
+| **Auto-run safe, ask for others** | Safe commands run automatically; `caution` and `destructive` commands still require confirmation. |
+
+The mode applies to both single-shot and chat sessions.
 
 ---
 
@@ -134,7 +190,8 @@ ShellSage has a two-layer safety system:
 
 ### Hard Blocklist
 
-The following commands are **always blocked** and can never run, regardless of context:
+The following commands are **always blocked** and can never run, regardless of
+context:
 
 - `rm -rf /`, `rm -rf /*`, `rm -rf ~`
 - `dd if=/dev/zero`, `dd if=/dev/random`, `dd if=/dev/urandom`
@@ -152,7 +209,9 @@ Each proposed command is shown with a color-coded panel:
 | caution | Yellow | 🟡 |
 | destructive | Red | 🔴 |
 
-You always see the command and its danger level **before** being asked to run it. You can also press **`e`** at the confirmation prompt to get a detailed token-by-token explanation.
+You always see the command and its danger level **before** being asked to run
+it. Press **`e`** at the confirmation prompt for a detailed token-by-token
+explanation.
 
 ---
 
@@ -162,7 +221,8 @@ You always see the command and its danger level **before** being asked to run it
 shellsage config
 ```
 
-This re-runs the interactive setup wizard where you can switch between Claude and Ollama, change models, and update your API key.
+This re-runs the interactive setup wizard where you can switch between Claude
+and Ollama, change models, update your API key, and adjust the execution mode.
 
 ---
 
@@ -173,7 +233,55 @@ This re-runs the interactive setup wizard where you can switch between Claude an
 3. The LLM responds with a JSON plan containing one or more shell commands.
 4. ShellSage validates each command against the safety blocklist.
 5. You confirm (or explain, or skip) each command before it runs.
-6. If a command fails, ShellSage automatically attempts to self-correct using the error output.
+6. If a command fails, ShellSage automatically attempts to self-correct using
+   the error output.
+7. In chat mode, every exchange (including command output) is fed back into the
+   conversation so follow-up requests are context-aware.
+
+---
+
+## Changelog
+
+### v0.1.3 — Multi-Turn Chat Mode
+- **New command: `shellsage chat`** — interactive REPL that accumulates the
+  full conversation history (requests, AI responses, command output) across
+  turns.
+- Self-correction in chat mode uses the full conversation context, not just the
+  last error.
+- Blocked commands in chat mode no longer exit the session — they are reported
+  and the REPL continues.
+- Both Claude and Ollama providers now accept a `messages` array for multi-turn
+  conversations.
+
+### v0.1.2 — Execution Modes
+- **New execution mode: `auto_safe`** — safe commands run automatically;
+  `caution` and `destructive` commands still prompt for confirmation.
+- Execution mode is configured during `shellsage init` / `shellsage config`
+  and persists to `~/.shellsage/config.toml`.
+- Default mode remains `ask_all` (prompt before every command) for safety.
+
+### v0.1.1 — History & Config Fixes
+- **Persistent history** — `shellsage history` now shows commands across
+  sessions (stored in `~/.shellsage/history.json`, capped at 200 entries).
+- **`shellsage history --clear`** — wipe all saved history.
+- Fixed routing bug where `shellsage history` and `shellsage config` were
+  incorrectly forwarded to the LLM as intents instead of being handled as
+  subcommands.
+- Config command now displays current settings in a formatted table before
+  offering to re-run the wizard.
+
+### v0.1.0 — Initial Release
+- Single-shot mode: translate plain English to shell commands via Claude or
+  Ollama.
+- Two-layer safety system: hard blocklist + LLM-assigned danger levels
+  (`safe` / `caution` / `destructive`).
+- `--dry-run` flag to preview commands without executing.
+- `--explain` flag for per-token command breakdown.
+- `--provider` flag to override the configured provider per run.
+- Automatic self-correction on command failure using the stderr output.
+- First-time setup wizard (`shellsage init`).
+- Context-aware prompts: OS, shell, working directory, and installed tools are
+  injected into every request.
 
 ---
 
@@ -185,7 +293,8 @@ This re-runs the interactive setup wizard where you can switch between Claude an
 4. Run tests: `pytest tests/`
 5. Submit a pull request.
 
-Please keep pull requests focused on a single concern and include tests for new functionality.
+Please keep pull requests focused on a single concern and include tests for new
+functionality.
 
 ---
 
