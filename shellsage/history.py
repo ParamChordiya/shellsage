@@ -22,7 +22,6 @@ from rich.table import Table
 console = Console()
 
 _HISTORY_FILE = Path.home() / ".shellsage" / "history.json"
-_LOCK_FILE = Path.home() / ".shellsage" / "history.lock"
 MAX_ENTRIES = 200
 
 # In-memory list for the current process lifetime
@@ -113,10 +112,11 @@ def _persist(entry: HistoryEntry) -> None:
     try:
         _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-        # Bug fix: without a lock, two concurrent ShellSage processes both
-        # read the file, both append, and the last writer wins — losing entries.
-        # Use an exclusive advisory lock around the entire read-modify-write.
-        lock_path = _LOCK_FILE
+        # Use an exclusive advisory lock around the entire read-modify-write
+        # so concurrent ShellSage processes can't corrupt the history file.
+        # Lock path is derived from _HISTORY_FILE so tests that redirect
+        # _HISTORY_FILE to a tmp dir also redirect the lock automatically.
+        lock_path = _HISTORY_FILE.parent / "history.lock"
         with open(lock_path, "w") as lock_fh:
             fcntl.flock(lock_fh, fcntl.LOCK_EX)
             try:
