@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +27,11 @@ _DEFAULTS: dict[str, Any] = {
     },
     "preferences": {
         "save_history": True,
-        "confirm_before_run": True,
-        "danger_warnings": True,
         # "ask_all"  — prompt before every command (original behaviour)
         # "auto_safe" — auto-run safe commands, prompt only for caution/destructive
         "execution_mode": "ask_all",
+        "timeout": 30,
+        "max_retries": 3,
     },
 }
 
@@ -69,11 +71,30 @@ def save(cfg: dict[str, Any]) -> None:
 
 
 def save_api_key(api_key: str) -> None:
-    """Write the Anthropic API key to ~/.shellsage/.env (never config.toml)."""
+    """Write the Anthropic API key to ~/.shellsage/.env (never config.toml).
+
+    Uses a write-to-temp-then-rename pattern so a crash during the write
+    never leaves a partial or empty .env file.  chmod 600 is applied to the
+    temp file *before* the rename so the key is never world-readable, even
+    briefly.
+    """
     config_dir()
-    _ENV_FILE.write_text(f'ANTHROPIC_API_KEY="{api_key}"\n')
-    # Restrict permissions so other users cannot read it
-    _ENV_FILE.chmod(0o600)
+    # Bug fix: the previous code wrote the key in-place then called chmod,
+    # so a crash between write and chmod left the key world-readable.
+    # A crash during write itself left an empty or truncated .env file.
+    # Fix: fchmod the fd *before* writing, then rename atomically.
+    tmp_fd, tmp_path = tempfile.mkstemp(dir=_CONFIG_DIR, suffix=".tmp")
+    try:
+        os.fchmod(tmp_fd, 0o600)
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(f'ANTHROPIC_API_KEY="{api_key}"\n')
+        os.replace(tmp_path, _ENV_FILE)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def get_provider_type(cfg: dict[str, Any] | None = None) -> str:
@@ -106,6 +127,28 @@ def get_execution_mode(cfg: dict[str, Any] | None = None) -> str:
         cfg = load()
     mode = cfg.get("preferences", {}).get("execution_mode", "ask_all")
     return mode if mode in ("ask_all", "auto_safe") else "ask_all"
+
+
+def get_timeout(cfg: dict[str, Any] | None = None) -> int:
+    """Return the command execution timeout in seconds (0 = no timeout)."""
+    if cfg is None:
+        cfg = load()
+    value = cfg.get("preferences", {}).get("timeout", 30)
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 30
+
+
+def get_max_retries(cfg: dict[str, Any] | None = None) -> int:
+    """Return the maximum number of self-correction attempts (default 3)."""
+    if cfg is None:
+        cfg = load()
+    value = cfg.get("preferences", {}).get("max_retries", 3)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 3
 
 
 # ---------------------------------------------------------------------------

@@ -122,8 +122,8 @@ class TestAutoSafeMode:
                 provider=_make_provider(), system_prompt="",
                 execution_mode="auto_safe",
             )
-            # Command ran automatically
-            mock_exec.assert_called_once_with("ls -la", dry_run=False)
+            # Command ran automatically (timeout forwarded from _process_step default)
+            mock_exec.assert_called_once_with("ls -la", dry_run=False, timeout=30)
             # No prompt was shown
             mock_prompt.assert_not_called()
 

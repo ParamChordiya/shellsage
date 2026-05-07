@@ -8,7 +8,10 @@ capped at MAX_ENTRIES to prevent unbounded growth.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import TypedDict
@@ -19,6 +22,7 @@ from rich.table import Table
 console = Console()
 
 _HISTORY_FILE = Path.home() / ".shellsage" / "history.json"
+_LOCK_FILE = Path.home() / ".shellsage" / "history.lock"
 MAX_ENTRIES = 200
 
 # In-memory list for the current process lifetime
@@ -101,15 +105,44 @@ def get_history() -> list[HistoryEntry]:
 # ---------------------------------------------------------------------------
 
 def _persist(entry: HistoryEntry) -> None:
-    """Append *entry* to the history file, capping at MAX_ENTRIES."""
+    """Append *entry* to the history file, capping at MAX_ENTRIES.
+
+    Uses an exclusive file lock and an atomic rename so that concurrent
+    ShellSage processes cannot corrupt the history file.
+    """
     try:
         _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        entries = _load_all()
-        entries.append(entry)
-        # Keep only the most recent MAX_ENTRIES
-        if len(entries) > MAX_ENTRIES:
-            entries = entries[-MAX_ENTRIES:]
-        _HISTORY_FILE.write_text(json.dumps(entries, indent=2))
+
+        # Bug fix: without a lock, two concurrent ShellSage processes both
+        # read the file, both append, and the last writer wins — losing entries.
+        # Use an exclusive advisory lock around the entire read-modify-write.
+        lock_path = _LOCK_FILE
+        with open(lock_path, "w") as lock_fh:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+            try:
+                entries = _load_all()
+                entries.append(entry)
+                # Keep only the most recent MAX_ENTRIES
+                if len(entries) > MAX_ENTRIES:
+                    entries = entries[-MAX_ENTRIES:]
+                # Bug fix: write to a temp file in the same directory then rename
+                # so a crash mid-write never leaves a partial/corrupt history file.
+                tmp_fd, tmp_path = tempfile.mkstemp(
+                    dir=_HISTORY_FILE.parent, suffix=".tmp"
+                )
+                try:
+                    with os.fdopen(tmp_fd, "w") as f:
+                        f.write(json.dumps(entries, indent=2))
+                    os.replace(tmp_path, _HISTORY_FILE)
+                except Exception:
+                    # Clean up the temp file if the rename failed
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                fcntl.flock(lock_fh, fcntl.LOCK_UN)
     except Exception:
         # History persistence is best-effort — never crash the main flow
         pass

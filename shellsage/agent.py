@@ -15,6 +15,7 @@ from rich.text import Text
 
 import shellsage.config as config
 import shellsage.history as history
+from shellsage.config import get_max_retries
 from shellsage.context import ShellContext, get_context
 from shellsage.executor import run as execute
 from shellsage.providers.base import LLMProvider
@@ -75,6 +76,26 @@ def _build_correction_prompt(command: str, stderr: str) -> str:
         "Please provide a corrected version. "
         "Respond ONLY with valid JSON in the same format as before."
     )
+
+
+def _build_multi_correction_prompt(
+    original: str,
+    attempts: list[tuple[str, str]],
+) -> str:
+    """Build an increasingly informative correction prompt after multiple failures.
+
+    *attempts* is a list of (command, stderr) pairs for each failed try so far.
+    """
+    lines = [
+        "The previous correction also failed.",
+        f"Original command: {original}",
+    ]
+    for i, (cmd, err) in enumerate(attempts, start=1):
+        ordinal = {1: "First", 2: "Second", 3: "Third"}.get(i, f"Attempt {i}")
+        lines.append(f"{ordinal} correction: {cmd}, error: {err}")
+    lines.append("Please provide a fundamentally different approach.")
+    lines.append("Respond ONLY with valid JSON in the same format as before.")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +225,10 @@ def run(
         sys.exit(1)
 
     total = len(steps)
-    execution_mode = config.get_execution_mode()
+    cfg = config.load()
+    execution_mode = config.get_execution_mode(cfg)
+    timeout = config.get_timeout(cfg)
+    max_retries = get_max_retries(cfg)
 
     # When auto_safe mode is active and the plan has multiple steps, show a
     # summary so the user knows what will run automatically vs what needs approval.
@@ -223,6 +247,8 @@ def run(
             provider=provider,
             system_prompt=system_prompt,
             execution_mode=execution_mode,
+            timeout=timeout,
+            max_retries=max_retries,
         )
 
 
@@ -241,6 +267,8 @@ def _process_step(
     provider: LLMProvider,
     system_prompt: str,
     execution_mode: str = "ask_all",
+    timeout: int = 30,
+    max_retries: int = 3,
 ) -> None:
     """Handle one step: show, optionally auto-run, prompt, explain, self-correct.
 
@@ -267,7 +295,7 @@ def _process_step(
 
     if auto_run:
         console.print("[dim]Auto-running (safe command)...[/dim]")
-        result = execute(step["command"], dry_run=dry_run)
+        result = execute(step["command"], dry_run=dry_run, timeout=timeout)
         history.record(intent=intent, command=step["command"], success=result.success)
         if result.success or dry_run:
             return
@@ -276,6 +304,7 @@ def _process_step(
             step=step, idx=idx, total=total, intent=intent,
             stderr=result.stderr, dry_run=dry_run, provider=provider,
             system_prompt=system_prompt, execution_mode=execution_mode,
+            timeout=timeout, max_retries=max_retries,
         )
         return
 
@@ -300,7 +329,7 @@ def _process_step(
             continue
 
         # answer == "y"
-        result = execute(step["command"], dry_run=dry_run)
+        result = execute(step["command"], dry_run=dry_run, timeout=timeout)
         history.record(intent=intent, command=step["command"], success=result.success)
 
         if result.success or dry_run:
@@ -310,6 +339,7 @@ def _process_step(
             step=step, idx=idx, total=total, intent=intent,
             stderr=result.stderr, dry_run=dry_run, provider=provider,
             system_prompt=system_prompt, execution_mode=execution_mode,
+            timeout=timeout, max_retries=max_retries,
         )
         return
 
@@ -329,43 +359,113 @@ def _self_correct(
     provider: LLMProvider,
     system_prompt: str,
     execution_mode: str,
+    timeout: int = 30,
+    max_retries: int = 3,
 ) -> None:
-    """Ask the LLM to fix a failed command, then re-process the corrected step."""
+    """Ask the LLM to fix a failed command, retrying up to *max_retries* times.
+
+    Each subsequent attempt receives a richer prompt that includes all prior
+    failed corrections so the LLM can take a fundamentally different approach.
+    """
+    original_command = step["command"]
+    # History of (command, stderr) pairs for every failed attempt so far.
+    failed_attempts: list[tuple[str, str]] = []
+    current_step = step
+    current_stderr = stderr
+
+    for attempt in range(1, max_retries + 1):
+        console.print(
+            Panel(
+                current_stderr or "(no stderr output)",
+                title=f"Command failed — self-correction attempt {attempt}/{max_retries}",
+                border_style="yellow",
+            )
+        )
+
+        # Build the correction prompt — richer on subsequent attempts
+        if attempt == 1:
+            correction_prompt = _build_correction_prompt(
+                current_step["command"], current_stderr
+            )
+        else:
+            correction_prompt = _build_multi_correction_prompt(
+                original_command, failed_attempts
+            )
+
+        try:
+            raw_correction = _call_llm(
+                provider, system_prompt, correction_prompt,
+                label=f"Correcting (attempt {attempt}/{max_retries})",
+            )
+            corrected_steps = _parse_with_retry(
+                provider, system_prompt, correction_prompt, raw_correction
+            )
+        except Exception as exc:
+            console.print(Panel(str(exc), title="Error", border_style="red"))
+            return
+
+        if not corrected_steps:
+            console.print(
+                Panel("Could not generate a corrected command.", border_style="red")
+            )
+            return
+
+        corrected_step = corrected_steps[0]
+
+        # Blocklist check on the corrected command before running it
+        if is_blocked(corrected_step["command"]):
+            console.print(
+                Panel(
+                    f"[bold red]{corrected_step['command']}[/bold red]\n\n"
+                    "Corrected command matches the hard blocklist and cannot be run.",
+                    title="Blocked",
+                    border_style="red",
+                )
+            )
+            return
+
+        _render_step(corrected_step, idx, total)
+
+        # In ask_all mode (or for non-safe commands in auto_safe), prompt user
+        corrected_level = classify_danger(
+            corrected_step["command"], corrected_step["danger_level"]
+        )
+        needs_prompt = execution_mode != "auto_safe" or corrected_level != "safe"
+        if needs_prompt:
+            answer = Prompt.ask(
+                "[bold]Run corrected command?[/bold] [dim](y / n)[/dim]",
+                choices=["y", "n"],
+                default="y",
+            ).lower()
+            if answer == "n":
+                console.print("[dim]Skipped.[/dim]")
+                return
+
+        correction_result = execute(
+            corrected_step["command"], dry_run=dry_run, timeout=timeout
+        )
+        history.record(
+            intent=intent,
+            command=corrected_step["command"],
+            success=correction_result.success,
+        )
+
+        if correction_result.success or dry_run:
+            return
+
+        # Record this failed attempt and continue the loop
+        failed_attempts.append((corrected_step["command"], correction_result.stderr))
+        current_step = corrected_step
+        current_stderr = correction_result.stderr
+
+    # All retries exhausted
     console.print(
         Panel(
-            stderr or "(no stderr output)",
-            title="Command failed — attempting self-correction",
-            border_style="yellow",
+            f"Self-correction failed after {max_retries} attempt(s). "
+            "The command could not be fixed automatically.",
+            title="Self-Correction Exhausted",
+            border_style="red",
         )
-    )
-    try:
-        correction_prompt = _build_correction_prompt(step["command"], stderr)
-        raw_correction = _call_llm(
-            provider, system_prompt, correction_prompt, label="Correcting"
-        )
-        corrected_steps = _parse_with_retry(
-            provider, system_prompt, correction_prompt, raw_correction
-        )
-    except Exception as exc:
-        console.print(Panel(str(exc), title="Error", border_style="red"))
-        return
-
-    if not corrected_steps:
-        console.print(
-            Panel("Could not generate a corrected command.", border_style="red")
-        )
-        return
-
-    _process_step(
-        step=corrected_steps[0],
-        idx=idx,
-        total=total,
-        intent=intent,
-        dry_run=dry_run,
-        explain_flag=False,
-        provider=provider,
-        system_prompt=system_prompt,
-        execution_mode=execution_mode,
     )
 
 

@@ -23,12 +23,14 @@ import shellsage.config as config
 import shellsage.history as history
 from shellsage.agent import (
     _build_correction_prompt,
+    _build_multi_correction_prompt,
     _build_system_prompt,
     _make_provider,
     _parse_steps,
     _render_step,
     _show_explanation,
 )
+from shellsage.config import get_max_retries
 from shellsage.context import get_context
 from shellsage.executor import ExecutionResult, run as execute
 from shellsage.providers.base import LLMProvider
@@ -50,6 +52,7 @@ class ChatSession:
     dry_run: bool
     explain_flag: bool
     execution_mode: str
+    max_retries: int = 3
     messages: list[dict[str, str]] = field(default_factory=list)
 
     # ---- message helpers -------------------------------------------------
@@ -219,30 +222,124 @@ def _self_correct_chat(
     intent: str,
     stderr: str,
 ) -> None:
-    """Ask the LLM to fix a failed command using full conversation context."""
+    """Ask the LLM to fix a failed command, retrying up to session.max_retries times.
+
+    Uses the full conversation history for context. Each subsequent attempt
+    receives a richer prompt with all prior failed corrections.
+    """
+    original_command = step["command"]
+    failed_attempts: list[tuple[str, str]] = []
+    current_step = step
+    current_stderr = stderr
+    max_retries = session.max_retries
+
+    for attempt in range(1, max_retries + 1):
+        console.print(
+            Panel(
+                current_stderr or "(no stderr output)",
+                title=f"Command failed — self-correction attempt {attempt}/{max_retries}",
+                border_style="yellow",
+            )
+        )
+
+        if attempt == 1:
+            correction_msg = _build_correction_prompt(
+                current_step["command"], current_stderr
+            )
+        else:
+            correction_msg = _build_multi_correction_prompt(
+                original_command, failed_attempts
+            )
+
+        session.add_user_message(correction_msg)
+
+        try:
+            raw = _call_llm_chat(
+                session,
+                label=f"Correcting (attempt {attempt}/{max_retries})",
+            )
+            session.add_assistant_message(raw)
+            corrected_steps = _parse_with_retry_chat(session, raw)
+        except Exception as exc:
+            console.print(Panel(str(exc), title="Error", border_style="red"))
+            return
+
+        if not corrected_steps:
+            console.print(
+                Panel("Could not generate a corrected command.", border_style="red")
+            )
+            return
+
+        corrected_step = corrected_steps[0]
+
+        if is_blocked(corrected_step["command"]):
+            console.print(
+                Panel(
+                    f"[bold red]{corrected_step['command']}[/bold red]\n\n"
+                    "Corrected command matches the hard blocklist and cannot be run.",
+                    title="Blocked",
+                    border_style="red",
+                )
+            )
+            session.add_user_message(
+                f"The corrected command `{corrected_step['command']}` was blocked."
+            )
+            return
+
+        _render_step(corrected_step, idx, total)
+
+        # Prompt user before running corrected command (unless auto_safe + safe)
+        corrected_level = classify_danger(
+            corrected_step["command"], corrected_step["danger_level"]
+        )
+        needs_prompt = session.execution_mode != "auto_safe" or corrected_level != "safe"
+        if needs_prompt:
+            answer = Prompt.ask(
+                "[bold]Run corrected command?[/bold] [dim](y / n)[/dim]",
+                choices=["y", "n"],
+                default="y",
+            ).lower()
+            if answer == "n":
+                console.print("[dim]Skipped.[/dim]")
+                session.add_skipped_command(corrected_step["command"])
+                return
+
+        correction_result = execute(
+            corrected_step["command"], dry_run=session.dry_run
+        )
+        history.record(
+            intent=intent,
+            command=corrected_step["command"],
+            success=correction_result.success,
+        )
+
+        if session.dry_run:
+            session.add_dry_run_command(corrected_step["command"])
+            return
+
+        session.add_execution_result(corrected_step["command"], correction_result)
+
+        if correction_result.success:
+            return
+
+        # Record this failed attempt and loop again
+        failed_attempts.append((corrected_step["command"], correction_result.stderr))
+        current_step = corrected_step
+        current_stderr = correction_result.stderr
+
+    # All retries exhausted
     console.print(
         Panel(
-            stderr or "(no stderr output)",
-            title="Command failed — attempting self-correction",
-            border_style="yellow",
+            f"Self-correction failed after {max_retries} attempt(s). "
+            "The command could not be fixed automatically.",
+            title="Self-Correction Exhausted",
+            border_style="red",
         )
     )
-    correction_msg = _build_correction_prompt(step["command"], stderr)
-    session.add_user_message(correction_msg)
-
-    try:
-        raw = _call_llm_chat(session, label="Correcting")
-        session.add_assistant_message(raw)
-        corrected_steps = _parse_with_retry_chat(session, raw)
-    except Exception as exc:
-        console.print(Panel(str(exc), title="Error", border_style="red"))
-        return
-
-    if not corrected_steps:
-        console.print(Panel("Could not generate a corrected command.", border_style="red"))
-        return
-
-    _process_step_chat(session, corrected_steps[0], idx, total, intent)
+    session.add_user_message(
+        f"Self-correction exhausted after {max_retries} attempt(s). "
+        "Please try a different approach."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +354,7 @@ def run_chat(
     """Enter the interactive multi-turn chat REPL."""
     cfg = config.load()
     execution_mode = config.get_execution_mode(cfg)
+    max_retries = get_max_retries(cfg)
 
     try:
         provider = _make_provider(provider_override)
@@ -273,6 +371,7 @@ def run_chat(
         dry_run=dry_run,
         explain_flag=explain_flag,
         execution_mode=execution_mode,
+        max_retries=max_retries,
     )
 
     console.print(

@@ -1,5 +1,8 @@
 """Ollama local LLM provider for ShellSage."""
 
+import json
+from typing import Iterator
+
 import requests
 
 from shellsage.providers.base import LLMProvider
@@ -57,6 +60,54 @@ class OllamaProvider(LLMProvider):
             response.raise_for_status()
             data = response.json()
             return data["message"]["content"]
+        except requests.exceptions.ConnectionError as exc:
+            raise RuntimeError(
+                _OLLAMA_HELP.format(url=self.base_url)
+            ) from exc
+        except requests.exceptions.Timeout as exc:
+            raise RuntimeError(
+                f"Request to Ollama timed out after 60 seconds.\n"
+                f"The model '{self.model}' may be loading. Try again in a moment."
+            ) from exc
+        except requests.exceptions.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else "?"
+            if status == 404:
+                raise RuntimeError(
+                    f"Model '{self.model}' not found in Ollama.\n"
+                    f"Pull it with: ollama pull {self.model}"
+                ) from exc
+            raise RuntimeError(f"Ollama HTTP error {status}: {exc}") from exc
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError(f"Unexpected Ollama response format: {exc}") from exc
+
+    def stream(
+        self,
+        system: str,
+        user: str,
+        messages: list[dict] | None = None,
+    ) -> Iterator[str]:
+        """Stream response tokens from the Ollama /api/chat endpoint."""
+        url = f"{self.base_url}/api/chat"
+        if messages is not None:
+            all_messages = [{"role": "system", "content": system}] + messages
+        else:
+            all_messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ]
+        payload = {
+            "model": self.model,
+            "stream": True,
+            "messages": all_messages,
+        }
+        try:
+            response = requests.post(url, json=payload, stream=True, timeout=60)
+            response.raise_for_status()
+            for line in response.iter_lines():
+                if line:
+                    data = json.loads(line)
+                    if content := data.get("message", {}).get("content", ""):
+                        yield content
         except requests.exceptions.ConnectionError as exc:
             raise RuntimeError(
                 _OLLAMA_HELP.format(url=self.base_url)

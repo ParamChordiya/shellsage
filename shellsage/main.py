@@ -103,9 +103,28 @@ def chat_cmd(
         None, "--provider", metavar="PROVIDER",
         help="Override provider for this session: claude or ollama.",
     ),
+    resume: Optional[str] = typer.Option(
+        None, "--resume", "-r", metavar="SESSION_ID",
+        help="Resume a previous session by its ID.",
+    ),
+    list_sessions: bool = typer.Option(
+        False, "--list-sessions", help="List all saved sessions and exit.",
+    ),
+    delete_session: Optional[str] = typer.Option(
+        None, "--delete-session", metavar="SESSION_ID",
+        help="Delete a session by ID and exit.",
+    ),
 ) -> None:
     """Start an interactive multi-turn chat session."""
-    _run_chat(dry_run, explain, provider)
+    if list_sessions:
+        _list_sessions()
+        return
+
+    if delete_session:
+        _delete_session(delete_session)
+        return
+
+    _run_chat(dry_run, explain, provider, session_id=resume)
 
 
 @app.command(name="history")
@@ -164,7 +183,12 @@ def _run_agent(
         raise typer.Exit(code=1)
 
 
-def _run_chat(dry_run: bool, explain: bool, provider: Optional[str]) -> None:
+def _run_chat(
+    dry_run: bool,
+    explain: bool,
+    provider: Optional[str],
+    session_id: Optional[str] = None,
+) -> None:
     if provider and provider not in ("claude", "ollama"):
         console.print(
             f"[red]Unknown provider '[bold]{provider}[/bold]'. Use 'claude' or 'ollama'.[/red]"
@@ -179,13 +203,60 @@ def _run_chat(dry_run: bool, explain: bool, provider: Optional[str]) -> None:
     from shellsage.chat import run_chat  # noqa: PLC0415
 
     try:
-        run_chat(dry_run=dry_run, explain_flag=explain, provider_override=provider)
+        run_chat(
+            dry_run=dry_run,
+            explain_flag=explain,
+            provider_override=provider,
+            session_id=session_id,
+        )
     except KeyboardInterrupt:
         console.print("\n[dim]Goodbye.[/dim]")
         raise typer.Exit()
     except Exception as exc:
         from rich.panel import Panel  # noqa: PLC0415
         console.print(Panel(str(exc), title="Error", border_style="red"))
+        raise typer.Exit(code=1)
+
+
+def _list_sessions() -> None:
+    from shellsage.sessions import list_sessions  # noqa: PLC0415
+    from rich.table import Table  # noqa: PLC0415
+
+    session_list = list_sessions()
+    if not session_list:
+        console.print("[dim]No saved sessions found.[/dim]")
+        return
+
+    table = Table(title="Saved Chat Sessions", show_lines=True)
+    table.add_column("ID", style="bold cyan", no_wrap=True)
+    table.add_column("Created", style="dim")
+    table.add_column("Messages", justify="right")
+    table.add_column("Preview", style="dim")
+
+    for s in session_list:
+        table.add_row(
+            s["id"],
+            s.get("created_at", ""),
+            str(s.get("message_count", 0)),
+            s.get("preview", ""),
+        )
+
+    console.print(table)
+    console.print(
+        "\n[dim]Resume a session with:[/dim] [bold]shellsage chat --resume <ID>[/bold]"
+    )
+
+
+def _delete_session(session_id: str) -> None:
+    from shellsage.sessions import delete_session  # noqa: PLC0415
+
+    deleted = delete_session(session_id)
+    if deleted:
+        console.print(f"[green]Session [bold]{session_id}[/bold] deleted.[/green]")
+    else:
+        console.print(
+            f"[yellow]Session [bold]{session_id}[/bold] not found.[/yellow]"
+        )
         raise typer.Exit(code=1)
 
 

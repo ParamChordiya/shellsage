@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import subprocess
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
 console = Console()
-
-_TIMEOUT = 30  # seconds
 
 
 class ExecutionResult(NamedTuple):
@@ -20,12 +18,23 @@ class ExecutionResult(NamedTuple):
     stderr: str
 
 
-def run(command: str, dry_run: bool = False) -> ExecutionResult:
+def run(command: str, dry_run: bool = False, timeout: Optional[int] = None) -> ExecutionResult:
     """Execute *command* in the user's shell.
 
     If *dry_run* is True the subprocess is never started; the command is
     simply printed and a success result is returned.
+
+    *timeout* is the number of seconds to wait before killing the subprocess.
+    Pass 0 for no timeout.  If omitted, the value from ~/.shellsage/config.toml
+    is used (default: 30 seconds).
     """
+    if timeout is None:
+        from shellsage import config as _config  # noqa: PLC0415
+        timeout = _config.get_timeout()
+
+    # 0 means "no timeout" — translate to None for subprocess
+    effective_timeout: Optional[int] = timeout if timeout > 0 else None
+
     if dry_run:
         console.print(
             Panel(
@@ -42,12 +51,12 @@ def run(command: str, dry_run: bool = False) -> ExecutionResult:
             shell=True,
             capture_output=True,
             text=True,
-            timeout=_TIMEOUT,
+            timeout=effective_timeout,
         )
     except subprocess.TimeoutExpired:
         console.print(
             Panel(
-                f"Command timed out after {_TIMEOUT} seconds:\n[bold]{command}[/bold]",
+                f"Command timed out after {timeout} seconds:\n[bold]{command}[/bold]",
                 title="Timeout",
                 border_style="red",
             )
