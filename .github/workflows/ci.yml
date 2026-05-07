@@ -31,7 +31,11 @@ jobs:
       - name: Check version sync
         run: |
           python - <<'EOF'
-          import tomllib, shellsage
+          try:
+              import tomllib
+          except ImportError:
+              import tomli as tomllib  # Python 3.10 backport
+          import shellsage
           with open("pyproject.toml", "rb") as f:
               toml_version = tomllib.load(f)["project"]["version"]
           pkg_version = shellsage.__version__
